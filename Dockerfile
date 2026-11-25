@@ -26,7 +26,7 @@ RUN --mount=type=cache,target=/root/.cache/bazel,id=bazel-${TARGETARCH} \
     cp bazel-bin/source/exe/envoy-static /usr/local/bin/envoy && \
     strip --strip-unneeded /usr/local/bin/envoy
 
-FROM gcr.io/distroless/cc-debian12:nonroot
+FROM gcr.io/distroless/cc-debian13:nonroot
 
 LABEL org.opencontainers.image.title="envoy-rpi" \
       org.opencontainers.image.description="Multi-arch distroless Envoy Proxy compiled with --define tcmalloc=disabled for Raspberry Pi (39-bit arm64) and amd64" \

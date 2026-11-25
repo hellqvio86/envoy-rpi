@@ -28,7 +28,7 @@ CHECK in Alloc: FATAL ERROR: Out of memory trying to allocate internal tcmalloc 
 - **Built from official upstream `envoyproxy/envoy` tags** (tracked in [`VERSION`](VERSION)).
 - **Compiled with `--define tcmalloc=disabled`** so Envoy uses standard `glibc` `malloc`, which respects 39-bit `arm64` virtual memory layouts.
 - **Native CI builds** on GitHub's `ubuntu-latest` (`amd64`) and `ubuntu-24.04-arm` (`arm64`) runners — no slow QEMU emulation.
-- **Distroless & hardened runtime** (`gcr.io/distroless/cc-debian12:nonroot`, UID `65532`) compatible with Kubernetes `restricted` Pod Security Standards (`readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`).
+- **Distroless & hardened runtime** (`gcr.io/distroless/cc-debian13:nonroot`, UID `65532`) compatible with Kubernetes `restricted` Pod Security Standards (`readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`).
 - **Supply-chain security:** Trivy vulnerability scanning, CycloneDX SBOM generation, and GitHub SLSA build provenance attestations.
 
 ---
