@@ -133,7 +133,7 @@ jobs:
           docker run --rm -v /tmp/smoke-envoy.yaml:/etc/envoy/envoy.yaml:ro "${TARGET_REF}" --mode validate -c /etc/envoy/envoy.yaml
 
       - name: Run Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: ${{ format('{0}/{1}:{2}-{3}', env.REGISTRY, env.IMAGE_NAME, steps.meta.outputs.version, matrix.arch) }}
           format: sarif
