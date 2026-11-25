@@ -22,7 +22,7 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 permissions:
-  contents: read
+  contents: write
   packages: write
   id-token: write
   attestations: write
@@ -198,3 +198,18 @@ jobs:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.manifest.outputs.digest }}
           push-to-registry: true
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: sbom.cdx.json
+          generate_release_notes: true
+          body: |
+            Multi-arch distroless Envoy Proxy (`linux/amd64` + `linux/arm64`) compiled from upstream `envoyproxy/envoy` `${{ needs.build-arch.outputs.version }}` with `--define tcmalloc=disabled` for Raspberry Pi (`39-bit` VA) and `amd64`.
+
+            ### Container Image
+            ```bash
+            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-arch.outputs.version }}
+            ```
+            **Digest:** `${{ steps.manifest.outputs.digest }}`

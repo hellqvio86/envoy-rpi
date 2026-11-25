@@ -2,6 +2,7 @@
 
 [![Build & Publish Multi-Arch Envoy](https://github.com/hellqvio86/envoy-rpi/actions/workflows/build.yml/badge.svg)](https://github.com/hellqvio86/envoy-rpi/actions/workflows/build.yml)
 [![Check Upstream Envoy](https://github.com/hellqvio86/envoy-rpi/actions/workflows/check-upstream.yml/badge.svg)](https://github.com/hellqvio86/envoy-rpi/actions/workflows/check-upstream.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/hellqvio86/envoy-rpi)](https://github.com/hellqvio86/envoy-rpi/releases)
 ![Architectures](https://img.shields.io/badge/arch-amd64%20%7C%20arm64-blue)
 ![Distroless](https://img.shields.io/badge/distroless-nonroot%20(65532)-green)
 [![License](https://img.shields.io/github/license/hellqvio86/envoy-rpi)](LICENSE)
