@@ -85,7 +85,7 @@ jobs:
 
       - name: Build and push (or load for PR)
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: ${{ matrix.platform }}
