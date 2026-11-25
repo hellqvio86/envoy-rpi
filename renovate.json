@@ -1,0 +1,31 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "labels": [
+    "dependencies"
+  ],
+  "automerge": false,
+  "gitAuthor": "Olof Hellqvist <olof.hellqvist@gmail.com>",
+  "github-actions": {
+    "enabled": true
+  },
+  "dockerfile": {
+    "enabled": true
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^VERSION$/"
+      ],
+      "matchStrings": [
+        "^(?<currentValue>v\\d+\\.\\d+\\.\\d+)\\s*$"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "envoyproxy/envoy"
+    }
+  ]
+}
