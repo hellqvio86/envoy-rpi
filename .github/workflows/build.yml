@@ -1,0 +1,200 @@
+---
+name: Build & Publish Multi-Arch Envoy
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      envoy_version:
+        description: 'Upstream envoyproxy/envoy tag to build (defaults to VERSION file)'
+        required: false
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+  security-events: write
+
+jobs:
+  build-arch:
+    name: Build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      version: ${{ steps.meta.outputs.version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve Envoy version and build image tag
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENVOY_VERSION="${{ github.event.inputs.envoy_version }}"
+          if [[ -z "${ENVOY_VERSION}" ]]; then
+            ENVOY_VERSION="$(tr -d '[:space:]' < VERSION)"
+          fi
+          echo "version=${ENVOY_VERSION}" >> "${GITHUB_OUTPUT}"
+
+          # Resolve upstream envoyproxy/envoy-build-ubuntu image pinned in the target tag's .bazelrc / ci
+          BUILD_IMG="$(curl -fsSL "https://raw.githubusercontent.com/envoyproxy/envoy/${ENVOY_VERSION}/.github/workflows/envoy_ci.yml" 2>/dev/null | grep -Eo 'envoyproxy/envoy-build-ubuntu:[a-f0-9]+' | head -n 1 || true)"
+          if [[ -z "${BUILD_IMG}" ]]; then
+            BUILD_IMG="$(curl -fsSL "https://raw.githubusercontent.com/envoyproxy/envoy/${ENVOY_VERSION}/ci/run_envoy_docker.sh" 2>/dev/null | grep -Eo 'envoyproxy/envoy-build-ubuntu:[a-f0-9]+' | head -n 1 || true)"
+          fi
+          if [[ -z "${BUILD_IMG}" ]]; then
+            BUILD_IMG="envoyproxy/envoy-build-ubuntu:b094e3f69fb4545c36d7a035a08088e6ef6b4011"
+          fi
+          echo "build_base=${BUILD_IMG}" >> "${GITHUB_OUTPUT}"
+          echo "Using Envoy ${ENVOY_VERSION} with build image ${BUILD_IMG}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (or load for PR)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          push: ${{ github.event_name != 'pull_request' }}
+          load: ${{ github.event_name == 'pull_request' }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}-${{ matrix.arch }}
+          build-args: |
+            ENVOY_VERSION=${{ steps.meta.outputs.version }}
+            BUILD_BASE=${{ steps.meta.outputs.build_base }}
+          cache-from: type=gha,scope=${{ matrix.arch }}-${{ steps.meta.outputs.version }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}-${{ steps.meta.outputs.version }}
+
+      - name: Smoke test Envoy binary & config validation
+        run: |
+          set -euo pipefail
+          TARGET_REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}-${{ matrix.arch }}"
+          docker run --rm "${TARGET_REF}" --version
+          cat <<'EOF' > /tmp/smoke-envoy.yaml
+          static_resources:
+            listeners:
+              - name: test_listener
+                address:
+                  socket_address:
+                    address: 0.0.0.0
+                    port_value: 3128
+                filter_chains:
+                  - filters:
+                      - name: envoy.filters.network.http_connection_manager
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                          stat_prefix: test
+                          route_config:
+                            name: local_route
+                            virtual_hosts:
+                              - name: local
+                                domains: ["*"]
+                                routes:
+                                  - match: { prefix: "/" }
+                                    direct_response: { status: 200 }
+                          http_filters:
+                            - name: envoy.filters.http.router
+                              typed_config:
+                                "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+          EOF
+          docker run --rm -v /tmp/smoke-envoy.yaml:/etc/envoy/envoy.yaml:ro "${TARGET_REF}" --mode validate -c /etc/envoy/envoy.yaml
+
+      - name: Run Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ format('{0}/{1}:{2}-{3}', env.REGISTRY, env.IMAGE_NAME, steps.meta.outputs.version, matrix.arch) }}
+          format: sarif
+          output: trivy-${{ matrix.arch }}.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+
+      - name: Upload Trivy scan results to GitHub Security
+        if: always() && github.event_name != 'pull_request'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-${{ matrix.arch }}.sarif
+          category: trivy-${{ matrix.arch }}
+
+  merge-manifest:
+    name: Publish Multi-Arch Manifest & Attestations
+    needs: build-arch
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.manifest.outputs.digest }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create & push multi-arch OCI manifest
+        id: manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          VER="${{ needs.build-arch.outputs.version }}"
+          echo "Merging multi-arch manifest for ${IMAGE}:${VER} and ${IMAGE}:latest..."
+          docker buildx imagetools create \
+            -t "${IMAGE}:${VER}" \
+            -t "${IMAGE}:latest" \
+            -t "${IMAGE}:sha-${GITHUB_SHA::7}" \
+            "${IMAGE}:${VER}-amd64" \
+            "${IMAGE}:${VER}-arm64"
+          DIGEST=$(docker buildx imagetools inspect "${IMAGE}:${VER}" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          echo "digest=${DIGEST}" >> "${GITHUB_OUTPUT}"
+          echo "Published ${IMAGE}:${VER}@${DIGEST}"
+
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.manifest.outputs.digest }}
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+
+      - name: Attest build provenance (SLSA)
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.manifest.outputs.digest }}
+          push-to-registry: true

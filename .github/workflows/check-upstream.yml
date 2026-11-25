@@ -1,0 +1,51 @@
+---
+name: Check Upstream Envoy Releases
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check-upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch latest stable envoyproxy/envoy release
+        id: upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          CURRENT="$(tr -d '[:space:]' < VERSION)"
+          LATEST="$(curl -fsSL https://api.github.com/repos/envoyproxy/envoy/releases/latest | jq -r '.tag_name')"
+          echo "current=${CURRENT}" >> "${GITHUB_OUTPUT}"
+          echo "latest=${LATEST}" >> "${GITHUB_OUTPUT}"
+          echo "Current: ${CURRENT}, Upstream latest: ${LATEST}"
+
+      - name: Create PR if a new version is available
+        if: steps.upstream.outputs.latest != '' && steps.upstream.outputs.latest != steps.upstream.outputs.current
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          LATEST="${{ steps.upstream.outputs.latest }}"
+          BRANCH="chore/envoy-${LATEST}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "${BRANCH}"
+          printf '%s\n' "${LATEST}" > VERSION
+          git add VERSION
+          git commit -m "chore: bump Envoy to ${LATEST}"
+          git push -u origin "${BRANCH}"
+          gh pr create \
+            --title "chore: bump Envoy to ${LATEST}" \
+            --body "Automated bump to upstream Envoy release \`${LATEST}\`." \
+            --base main \
+            --head "${BRANCH}"
