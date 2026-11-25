@@ -9,11 +9,10 @@ Instructions for AI/code agents working in this repository.
 ## Ground Rules
 
 - **Pull requests required:** `main` is branch-protected; always open a PR instead of pushing directly to `main`.
-- **Lint & local build before pushing:**
-  - `make lint` runs `yamllint .`, `shellcheck`, and `hadolint` on `Dockerfile`.
-  - `make build` runs `docker buildx build --load -t envoy-rpi:local .` and smoke-tests `envoy --version`.
+- **Mandatory local build & lint before pushing:**
+  - Never bypass `.githooks/pre-push` (`--no-verify` is forbidden).
+  - Always run `make test` (`make lint` + `make build`) and verify all linters (`yamllint`, `shellcheck`, `hadolint`), `trufflehog` secret scanning (`make secrets`), and the local `docker buildx build` + `envoy --version` smoke test pass **before** pushing to any branch.
   - `make install-hooks` configures `core.hooksPath=.githooks`.
-  - `.githooks/pre-push` automatically runs `yamllint`, `shellcheck`, `hadolint`, and the local `docker buildx build` + smoke test on every `git push`.
 - **Never commit secrets** (`GITHUB_TOKEN`, `.env`, private keys, etc.).
 - **Keep runtime hardened:** Keep the runtime stage distroless non-root (`gcr.io/distroless/cc-debian12:nonroot`, UID/GID `65532`).
 - **Keep release & Renovate workflows intact:**

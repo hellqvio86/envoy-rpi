@@ -17,6 +17,15 @@ else
   docker run --rm -i ghcr.io/hadolint/hadolint < Dockerfile
 fi
 
+echo "🔐 [pre-push] Running TruffleHog secret scan..."
+if command -v trufflehog >/dev/null 2>&1; then
+  trufflehog --no-update git "file://${REPO_ROOT}" --only-verified --fail
+  trufflehog --no-update filesystem "${REPO_ROOT}" --only-verified --fail
+else
+  docker run --rm --security-opt label=disable -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*' -v "${REPO_ROOT}:/src:ro" -w /src trufflesecurity/trufflehog:latest git file:///src --only-verified --fail
+  docker run --rm --security-opt label=disable -v "${REPO_ROOT}:/src:ro" -w /src trufflesecurity/trufflehog:latest filesystem /src --only-verified --fail
+fi
+
 echo "🏗️ [pre-push] Building envoy-rpi locally..."
 ENVOY_VERSION="$(tr -d '[:space:]' < VERSION)"
 BUILD_BASE="$(grep -E '^ARG BUILD_BASE=' Dockerfile | head -n 1 | cut -d= -f2-)"
