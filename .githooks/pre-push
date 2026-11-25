@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "${REPO_ROOT}"
+
+echo "🔍 [pre-push] Running yamllint..."
+yamllint .
+
+echo "🔍 [pre-push] Running shellcheck..."
+shellcheck -s bash bin/renovate/run.sh bin/install-hooks.sh .githooks/pre-push
+
+echo "🐳 [pre-push] Linting Dockerfile with hadolint..."
+if command -v hadolint >/dev/null 2>&1; then
+  hadolint Dockerfile
+else
+  docker run --rm -i ghcr.io/hadolint/hadolint < Dockerfile
+fi
+
+echo "🏗️ [pre-push] Building envoy-rpi locally..."
+ENVOY_VERSION="$(tr -d '[:space:]' < VERSION)"
+BUILD_BASE="$(grep -E '^ARG BUILD_BASE=' Dockerfile | head -n 1 | cut -d= -f2-)"
+docker buildx build \
+  --load \
+  --build-arg "ENVOY_VERSION=${ENVOY_VERSION}" \
+  --build-arg "BUILD_BASE=${BUILD_BASE}" \
+  -t "envoy-rpi:local" \
+  .
+
+echo "🧪 [pre-push] Smoke testing envoy-rpi:local..."
+docker run --rm "envoy-rpi:local" --version
+
+echo "✅ [pre-push] All lint and local build checks passed!"
