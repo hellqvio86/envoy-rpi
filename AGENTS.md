@@ -12,6 +12,8 @@ Instructions for AI/code agents working in this repository.
 - **Mandatory local build & lint before pushing:**
   - Never bypass `.githooks/pre-push` (`--no-verify` is forbidden).
   - Always run `make test` (`make lint` + `make build`) and verify all linters (`yamllint`, `shellcheck`, `hadolint`), `trufflehog` secret scanning (`make secrets`), and the local `docker buildx build` + `envoy --version` smoke test pass **before** pushing to any branch.
+  - `make build` runs `docker buildx build --load -t envoy-rpi:local .` and smoke-tests `envoy --version`.
+  - `make publish` runs `make lint`, logs into `ghcr.io` via `gh auth token`, and builds/pushes `PLATFORMS` (defaults to `linux/amd64`; set `PLATFORMS=linux/amd64,linux/arm64` for multi-arch).
   - `make install-hooks` configures `core.hooksPath=.githooks`.
 - **Never commit secrets** (`GITHUB_TOKEN`, `.env`, private keys, etc.).
 - **Keep runtime hardened:** Keep the runtime stage distroless non-root (`gcr.io/distroless/cc-debian13:nonroot`, UID/GID `65532`).
