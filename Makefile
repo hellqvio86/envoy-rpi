@@ -1,4 +1,4 @@
-.PHONY: lint build install-hooks
+.PHONY: lint build test install-hooks renovate
 
 lint:
 	yamllint .
@@ -10,8 +10,18 @@ lint:
 	fi
 
 build:
-	docker buildx build --load -t envoy-rpi:local .
+	@ENVOY_VERSION="$$(tr -d '[:space:]' < VERSION)"; \
+	BUILD_BASE="$$(grep -E '^ARG BUILD_BASE=' Dockerfile | head -n 1 | cut -d= -f2-)"; \
+	docker buildx build --load \
+		--build-arg "ENVOY_VERSION=$${ENVOY_VERSION}" \
+		--build-arg "BUILD_BASE=$${BUILD_BASE}" \
+		-t envoy-rpi:local .
 	docker run --rm envoy-rpi:local --version
+
+test: lint build
 
 install-hooks:
 	./bin/install-hooks.sh
+
+renovate:
+	./bin/renovate/run.sh --summary
