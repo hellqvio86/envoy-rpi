@@ -8,7 +8,6 @@
     "dependencies"
   ],
   "automerge": false,
-  "gitAuthor": "Olof Hellqvist <olof.hellqvist@gmail.com>",
   "github-actions": {
     "enabled": true
   },
@@ -26,6 +25,17 @@
       ],
       "datasourceTemplate": "github-releases",
       "depNameTemplate": "envoyproxy/envoy"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^bin/renovate/run\\.sh$/"
+      ],
+      "matchStrings": [
+        "DEFAULT_RENOVATE_IMAGE=\"(?<depName>[^@\"]+)@(?<currentDigest>sha256:[a-f0-9]+)\""
+      ],
+      "datasourceTemplate": "docker",
+      "currentValueTemplate": "latest"
     }
   ]
 }

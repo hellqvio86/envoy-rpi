@@ -39,7 +39,10 @@ CHECK in Alloc: FATAL ERROR: Out of memory trying to allocate internal tcmalloc 
 docker pull ghcr.io/hellqvio86/envoy-rpi:v1.36.13
 ```
 
-### Kubernetes Example (`restricted` Pod Security)
+### Kubernetes Container Fragment
+
+> Note: This is a container/securityContext fragment; provide your own `Deployment`, `ConfigMap` (mounted at `/etc/envoy/envoy.yaml` — see [`examples/envoy.yaml`](examples/envoy.yaml)), `Service`, and probes.
+
 ```yaml
 securityContext:
   runAsNonRoot: true
@@ -58,17 +61,27 @@ containers:
         drop: ["ALL"]
 ```
 
+### Allocator Trade-Off & Validation
+
+Compiling with `--define tcmalloc=disabled` replaces Google's 48-bit TCMalloc with standard `glibc` `malloc`. For homelab/edge proxy workloads this eliminates the `39-bit` ARM64 `MmapAligned()` crash, though high-concurrency throughput/RSS characteristics differ from upstream TCMalloc builds — validate resource limits against your target workload.
+
+### Image Tags & Release Policy
+
+- `vMAJOR.MINOR.PATCH` (e.g. `v1.36.13`): Multi-arch OCI manifest (`linux/amd64` + `linux/arm64`), published on matching Git tag push.
+- `latest`: Tracks the latest published multi-arch manifest on `main`.
+- `sha-<short>`: Commit-specific multi-arch manifest.
+
 ---
 
 ## 🔄 CI/CD & Automation
 
 - **[`.github/workflows/build.yml`](.github/workflows/build.yml):**
-  - Builds `linux/amd64` and `linux/arm64` natively in parallel.
-  - Smoke-tests `envoy --version` and `envoy --mode validate` on both architectures.
-  - Scans images with **Trivy** (`CRITICAL,HIGH`).
-  - Merges into a multi-arch OCI manifest on `ghcr.io/hellqvio86/envoy-rpi`, attaches a CycloneDX SBOM, and generates SLSA build provenance attestations.
-- **[`.github/workflows/check-upstream.yml`](.github/workflows/check-upstream.yml):**
-  - Weekly scheduled check against `envoyproxy/envoy` releases; automatically opens a PR updating `VERSION` when a new stable release is published.
+  - Runs offline unit tests (`./tests/test_helpers.sh`), then builds `linux/amd64` and `linux/arm64` natively in parallel using `./bin/resolve-build-inputs.sh`.
+  - Runs hardened runtime HTTP smoke tests (`--read-only --cap-drop=ALL --security-opt=no-new-privileges --user 65532:65532`) with [`examples/envoy.yaml`](examples/envoy.yaml) on both architectures.
+  - Scans images with **Trivy** (`CRITICAL,HIGH`, `exit-code: 1`, `ignore-unfixed: true`, SARIF upload to GitHub Security).
+  - Verifies both `linux/amd64` and `linux/arm64` platforms in the merged OCI manifest on `ghcr.io/hellqvio86/envoy-rpi`, attaches a CycloneDX SBOM, generates SLSA build provenance attestations, and manages Draft/Published GitHub Releases.
+- **[`.github/workflows/security.yml`](.github/workflows/security.yml):** Daily + PR/push TruffleHog secret scan and Trivy filesystem scan.
+- **[`.github/workflows/check-upstream.yml`](.github/workflows/check-upstream.yml):** Weekly idempotent check against `envoyproxy/envoy` releases.
 
 ---
 

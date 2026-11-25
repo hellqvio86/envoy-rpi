@@ -16,25 +16,46 @@ on:
         description: 'Upstream envoyproxy/envoy tag to build (defaults to VERSION file)'
         required: false
         type: string
+      publish_release:
+        description: 'Publish/update GHCR manifest & draft release (default false = build-only)'
+        required: false
+        default: false
+        type: boolean
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 permissions:
-  contents: write
-  packages: write
-  id-token: write
-  attestations: write
-  security-events: write
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  unit-tests:
+    name: Unit Tests & Static Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run helper unit tests
+        run: ./tests/test_helpers.sh
+
   build-arch:
     name: Build (${{ matrix.arch }})
+    needs: unit-tests
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
     outputs:
-      digest: ${{ steps.build.outputs.digest }}
       version: ${{ steps.meta.outputs.version }}
+      envoy_commit: ${{ steps.meta.outputs.envoy_commit }}
+      build_base: ${{ steps.meta.outputs.build_base }}
     strategy:
       fail-fast: false
       matrix:
@@ -48,99 +69,101 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - name: Resolve Envoy version and build image tag
+      - name: Validate & resolve Envoy build inputs
         id: meta
+        env:
+          INPUT_ENVOY_VERSION: ${{ github.event.inputs.envoy_version }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
         shell: bash
         run: |
-          set -euo pipefail
-          ENVOY_VERSION="${{ github.event.inputs.envoy_version }}"
-          if [[ -z "${ENVOY_VERSION}" ]]; then
-            ENVOY_VERSION="$(tr -d '[:space:]' < VERSION)"
-          fi
-          echo "version=${ENVOY_VERSION}" >> "${GITHUB_OUTPUT}"
+          set -Eeuo pipefail
+          FILE_VERSION="$(tr -d '[:space:]' < VERSION)"
+          TARGET_VERSION="${FILE_VERSION}"
 
-          # Resolve upstream envoyproxy/envoy-build-ubuntu image pinned in the target tag's .bazelrc
-          BUILD_IMG="$(curl -fsSL "https://raw.githubusercontent.com/envoyproxy/envoy/${ENVOY_VERSION}/.bazelrc" 2>/dev/null | grep -Eo 'envoyproxy/envoy-build-ubuntu:[a-f0-9]+' | head -n 1 || true)"
-          if [[ -z "${BUILD_IMG}" ]]; then
-            BUILD_IMG="envoyproxy/envoy-build-ubuntu:86873047235e9b8232df989a5999b9bebf9db69c"
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" && -n "${INPUT_ENVOY_VERSION}" ]]; then
+            TARGET_VERSION="${INPUT_ENVOY_VERSION}"
           fi
-          echo "build_base=${BUILD_IMG}" >> "${GITHUB_OUTPUT}"
-          echo "Using Envoy ${ENVOY_VERSION} with build image ${BUILD_IMG}"
+
+          # Fail closed if a release tag push does not match VERSION
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            if [[ "${REF_NAME}" != "${FILE_VERSION}" ]]; then
+              echo "❌ Error: Git tag '${REF_NAME}' does not match VERSION '${FILE_VERSION}'." >&2
+              exit 1
+            fi
+            TARGET_VERSION="${REF_NAME}"
+          fi
+
+          ./bin/resolve-build-inputs.sh --version "${TARGET_VERSION}" --github-output
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4
 
       - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+        if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.publish_release)
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push (or load for PR)
+      - name: Build and push staging tag (or load for PR/dry-run)
         id: build
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7
         with:
           context: .
           platforms: ${{ matrix.platform }}
-          push: ${{ github.event_name != 'pull_request' }}
-          load: ${{ github.event_name == 'pull_request' }}
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}-${{ matrix.arch }}
+          push: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.publish_release) }}
+          load: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !inputs.publish_release) }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:stage-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
           build-args: |
             ENVOY_VERSION=${{ steps.meta.outputs.version }}
+            ENVOY_COMMIT=${{ steps.meta.outputs.envoy_commit }}
             BUILD_BASE=${{ steps.meta.outputs.build_base }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp || '' }}
+            VCS_REF=${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.arch }}-${{ steps.meta.outputs.version }}
           cache-to: type=gha,mode=max,scope=${{ matrix.arch }}-${{ steps.meta.outputs.version }}
 
-      - name: Smoke test Envoy binary & config validation
+      - name: Hardened runtime smoke test (non-root, read-only rootfs, drop ALL)
+        shell: bash
         run: |
-          set -euo pipefail
-          TARGET_REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}-${{ matrix.arch }}"
-          docker run --rm "${TARGET_REF}" --version
-          cat <<'EOF' > /tmp/smoke-envoy.yaml
-          static_resources:
-            listeners:
-              - name: test_listener
-                address:
-                  socket_address:
-                    address: 0.0.0.0
-                    port_value: 3128
-                filter_chains:
-                  - filters:
-                      - name: envoy.filters.network.http_connection_manager
-                        typed_config:
-                          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
-                          stat_prefix: test
-                          route_config:
-                            name: local_route
-                            virtual_hosts:
-                              - name: local
-                                domains: ["*"]
-                                routes:
-                                  - match: { prefix: "/" }
-                                    direct_response: { status: 200 }
-                          http_filters:
-                            - name: envoy.filters.http.router
-                              typed_config:
-                                "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
-          EOF
-          docker run --rm -v /tmp/smoke-envoy.yaml:/etc/envoy/envoy.yaml:ro "${TARGET_REF}" --mode validate -c /etc/envoy/envoy.yaml
+          set -Eeuo pipefail
+          TARGET_REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:stage-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}"
+          docker run --rm --read-only --cap-drop=ALL --security-opt=no-new-privileges --user 65532:65532 "${TARGET_REF}" --version
+          docker run --rm --read-only --cap-drop=ALL --security-opt=no-new-privileges --user 65532:65532 \
+            -v "${PWD}/examples/envoy.yaml:/etc/envoy/envoy.yaml:ro" "${TARGET_REF}" --mode validate -c /etc/envoy/envoy.yaml
 
-      - name: Run Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@0.35.0
+          CID="$(docker run -d --read-only --cap-drop=ALL --security-opt=no-new-privileges --user 65532:65532 \
+            -p 18080:8080 -v "${PWD}/examples/envoy.yaml:/etc/envoy/envoy.yaml:ro" "${TARGET_REF}")"
+          trap 'docker rm -f "${CID}" >/dev/null 2>&1 || true' EXIT
+
+          for _ in $(seq 1 15); do
+            if curl -fsS http://127.0.0.1:18080/ | grep -qx 'ok'; then
+              echo "✅ Hardened runtime HTTP check passed on ${TARGET_REF}"
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs "${CID}" || true
+          echo "❌ Error: Envoy container failed hardened runtime HTTP check." >&2
+          exit 1
+
+      - name: Run Trivy vulnerability scan (blocking on CRITICAL,HIGH)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
-          image-ref: ${{ format('{0}/{1}:{2}-{3}', env.REGISTRY, env.IMAGE_NAME, steps.meta.outputs.version, matrix.arch) }}
+          image-ref: ${{ format('{0}/{1}:stage-{2}-{3}-{4}', env.REGISTRY, env.IMAGE_NAME, github.run_id, github.run_attempt, matrix.arch) }}
           format: sarif
           output: trivy-${{ matrix.arch }}.sarif
           severity: CRITICAL,HIGH
           ignore-unfixed: true
+          exit-code: '1'
 
       - name: Upload Trivy scan results to GitHub Security
         if: success() && github.event_name != 'pull_request'
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@915412ff23e8b7659517e607487dbeae018f2934  # v4
         with:
           sarif_file: trivy-${{ matrix.arch }}.sarif
           category: trivy-${{ matrix.arch }}
@@ -148,53 +171,90 @@ jobs:
   merge-manifest:
     name: Publish Multi-Arch Manifest & Attestations
     needs: build-arch
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.publish_release)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
     outputs:
       digest: ${{ steps.manifest.outputs.digest }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create & push multi-arch OCI manifest
+      - name: Verify staging images & publish multi-arch OCI manifest
         id: manifest
         shell: bash
         run: |
-          set -euo pipefail
+          set -Eeuo pipefail
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
           VER="${{ needs.build-arch.outputs.version }}"
-          echo "Merging multi-arch manifest for ${IMAGE}:${VER} and ${IMAGE}:latest..."
+          AMD64_STAGE="${IMAGE}:stage-${{ github.run_id }}-${{ github.run_attempt }}-amd64"
+          ARM64_STAGE="${IMAGE}:stage-${{ github.run_id }}-${{ github.run_attempt }}-arm64"
+
+          # Verify both staging images exist before creating final manifest
+          docker buildx imagetools inspect "${AMD64_STAGE}" >/dev/null
+          docker buildx imagetools inspect "${ARM64_STAGE}" >/dev/null
+
           docker buildx imagetools create \
             -t "${IMAGE}:${VER}" \
             -t "${IMAGE}:latest" \
             -t "${IMAGE}:sha-${GITHUB_SHA::7}" \
-            "${IMAGE}:${VER}-amd64" \
-            "${IMAGE}:${VER}-arm64"
+            "${AMD64_STAGE}" \
+            "${ARM64_STAGE}"
+
+          # Assert final manifest contains both linux/amd64 and linux/arm64
+          INSPECT_JSON="$(docker buildx imagetools inspect "${IMAGE}:${VER}" --raw)"
+          echo "${INSPECT_JSON}" | jq -e '[.manifests[] | "\(.platform.os)/\(.platform.architecture)"] | sort == ["linux/amd64", "linux/arm64"]' >/dev/null
+
           DIGEST=$(docker buildx imagetools inspect "${IMAGE}:${VER}" --format '{{json .Manifest.Digest}}' | tr -d '"')
           echo "digest=${DIGEST}" >> "${GITHUB_OUTPUT}"
-          echo "Published ${IMAGE}:${VER}@${DIGEST}"
+          echo "Published ${IMAGE}:${VER}@${DIGEST} (verified linux/amd64 + linux/arm64)"
 
       - name: Generate CycloneDX SBOM
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0
         with:
           image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.manifest.outputs.digest }}
           format: cyclonedx-json
           output-file: sbom.cdx.json
 
+      - name: Upload SBOM artifact for release job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: sbom
+          path: sbom.cdx.json
+          retention-days: 1
+
       - name: Attest build provenance (SLSA)
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.manifest.outputs.digest }}
           push-to-registry: true
+
+  release:
+    name: Create or Publish GitHub Release
+    needs: [build-arch, merge-manifest]
+    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.publish_release)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download SBOM artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: sbom
 
       - name: Check existing release state
         id: release_check
@@ -202,7 +262,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          set -euo pipefail
+          set -Eeuo pipefail
           VER="${{ needs.build-arch.outputs.version }}"
           if gh release view "${VER}" --repo "${{ github.repository }}" --json isDraft -q '.isDraft' 2>/dev/null | grep -q '^false$'; then
             echo "published=true" >> "${GITHUB_OUTPUT}"
@@ -212,7 +272,7 @@ jobs:
 
       - name: Create or Update Draft GitHub Release
         if: (!startsWith(github.ref, 'refs/tags/v')) && steps.release_check.outputs.published == 'false'
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3  # v3
         with:
           tag_name: ${{ needs.build-arch.outputs.version }}
           name: Release ${{ needs.build-arch.outputs.version }}
@@ -221,27 +281,27 @@ jobs:
           files: sbom.cdx.json
           generate_release_notes: true
           body: |
-            Multi-arch distroless Envoy Proxy (`linux/amd64` + `linux/arm64`) compiled from upstream `envoyproxy/envoy` `${{ needs.build-arch.outputs.version }}` with `--define tcmalloc=disabled` for Raspberry Pi (`39-bit` VA) and `amd64`.
+            Multi-arch distroless Envoy Proxy (`linux/amd64` + `linux/arm64`) compiled from upstream `envoyproxy/envoy` `${{ needs.build-arch.outputs.version }}` (`${{ needs.build-arch.outputs.envoy_commit }}`) with `--define tcmalloc=disabled` for Raspberry Pi (`39-bit` VA) and `amd64`.
 
             ### Container Image
             ```bash
             docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-arch.outputs.version }}
             ```
-            **Digest:** `${{ steps.manifest.outputs.digest }}`
+            **Manifest Digest:** `${{ needs.merge-manifest.outputs.digest }}`
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3  # v3
         with:
           name: Release ${{ needs.build-arch.outputs.version }}
           draft: false
           files: sbom.cdx.json
           generate_release_notes: true
           body: |
-            Multi-arch distroless Envoy Proxy (`linux/amd64` + `linux/arm64`) compiled from upstream `envoyproxy/envoy` `${{ needs.build-arch.outputs.version }}` with `--define tcmalloc=disabled` for Raspberry Pi (`39-bit` VA) and `amd64`.
+            Multi-arch distroless Envoy Proxy (`linux/amd64` + `linux/arm64`) compiled from upstream `envoyproxy/envoy` `${{ needs.build-arch.outputs.version }}` (`${{ needs.build-arch.outputs.envoy_commit }}`) with `--define tcmalloc=disabled` for Raspberry Pi (`39-bit` VA) and `amd64`.
 
             ### Container Image
             ```bash
             docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-arch.outputs.version }}
             ```
-            **Digest:** `${{ steps.manifest.outputs.digest }}`
+            **Manifest Digest:** `${{ needs.merge-manifest.outputs.digest }}`
