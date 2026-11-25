@@ -193,7 +193,7 @@ jobs:
           output-file: sbom.cdx.json
 
       - name: Attest build provenance (SLSA)
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.manifest.outputs.digest }}
