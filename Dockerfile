@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 ARG ENVOY_VERSION=v1.36.13
-ARG BUILD_BASE=envoyproxy/envoy-build-ubuntu:b094e3f69fb4545c36d7a035a08088e6ef6b4011
+ARG BUILD_BASE=envoyproxy/envoy-build-ubuntu:86873047235e9b8232df989a5999b9bebf9db69c
 
 FROM ${BUILD_BASE} AS builder
 
