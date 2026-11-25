@@ -16,6 +16,8 @@ WORKDIR /src/envoy
 
 # Disable Google TCMalloc (which assumes 48-bit VA) so Envoy runs on 39-bit arm64 Raspberry Pi kernels.
 RUN --mount=type=cache,target=/root/.cache/bazel,id=bazel-${TARGETARCH} \
+    ./bazel/setup_clang.sh /opt/llvm && \
+    export PATH="/opt/llvm/bin:${PATH}" CC=clang CXX=clang++ && \
     bazel build \
       --config=clang \
       --define tcmalloc=disabled \
