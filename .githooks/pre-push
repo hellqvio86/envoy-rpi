@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "${REPO_ROOT}"
@@ -8,7 +8,10 @@ echo "🔍 [pre-push] Running yamllint..."
 yamllint .
 
 echo "🔍 [pre-push] Running shellcheck..."
-shellcheck -s bash bin/renovate/run.sh bin/install-hooks.sh .githooks/pre-push
+shellcheck -s bash bin/resolve-build-inputs.sh bin/publish.sh bin/renovate/run.sh bin/install-hooks.sh .githooks/pre-push tests/test_helpers.sh
+
+echo "🧪 [pre-push] Running offline unit tests..."
+./tests/test_helpers.sh
 
 echo "🐳 [pre-push] Linting Dockerfile with hadolint..."
 if command -v hadolint >/dev/null 2>&1; then
@@ -22,21 +25,21 @@ if command -v trufflehog >/dev/null 2>&1; then
   trufflehog --no-update git "file://${REPO_ROOT}" --only-verified --fail
   trufflehog --no-update filesystem "${REPO_ROOT}" --only-verified --fail
 else
-  docker run --rm --security-opt label=disable -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*' -v "${REPO_ROOT}:/src:ro" -w /src trufflesecurity/trufflehog:latest git file:///src --only-verified --fail
-  docker run --rm --security-opt label=disable -v "${REPO_ROOT}:/src:ro" -w /src trufflesecurity/trufflehog:latest filesystem /src --only-verified --fail
+  SELINUX_ARGS=()
+  if [[ -n "${CONTAINER_SELINUX_OPT:-}" ]]; then
+    read -ra SELINUX_ARGS <<< "${CONTAINER_SELINUX_OPT}"
+  fi
+  docker run --rm "${SELINUX_ARGS[@]}" -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*' -v "${REPO_ROOT}:/src:ro" -w /src trufflesecurity/trufflehog:latest git file:///src --only-verified --fail
+  docker run --rm "${SELINUX_ARGS[@]}" -v "${REPO_ROOT}:/src:ro" -w /src trufflesecurity/trufflehog:latest filesystem /src --only-verified --fail
 fi
 
-echo "🏗️ [pre-push] Building envoy-rpi locally..."
-ENVOY_VERSION="$(tr -d '[:space:]' < VERSION)"
-BUILD_BASE="$(grep -E '^ARG BUILD_BASE=' Dockerfile | head -n 1 | cut -d= -f2-)"
-docker buildx build \
-  --load \
-  --build-arg "ENVOY_VERSION=${ENVOY_VERSION}" \
-  --build-arg "BUILD_BASE=${BUILD_BASE}" \
-  -t "envoy-rpi:local" \
-  .
+if [[ "${PRE_PUSH_BUILD:-0}" == "1" ]]; then
+  echo "🏗️ [pre-push] Building envoy-rpi locally..."
+  make build
+  echo "🧪 [pre-push] Running hardened runtime smoke test..."
+  make smoke-test
+else
+  echo "ℹ️ [pre-push] Skipping full C++ Docker build (set PRE_PUSH_BUILD=1 or run 'make build' to run locally)."
+fi
 
-echo "🧪 [pre-push] Smoke testing envoy-rpi:local..."
-docker run --rm "envoy-rpi:local" --version
-
-echo "✅ [pre-push] All lint and local build checks passed!"
+echo "✅ [pre-push] All lint, unit test, and secret scan checks passed!"

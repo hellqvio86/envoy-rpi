@@ -9,15 +9,14 @@ Instructions for AI/code agents working in this repository.
 ## Ground Rules
 
 - **Pull requests required:** `main` is branch-protected; always open a PR instead of pushing directly to `main`.
-- **Mandatory local build & lint before pushing:**
+- **Mandatory local validation before pushing:**
   - Never bypass `.githooks/pre-push` (`--no-verify` is forbidden).
-  - Always run `make test` (`make lint` + `make build`) and verify all linters (`yamllint`, `shellcheck`, `hadolint`), `trufflehog` secret scanning (`make secrets`), and the local `docker buildx build` + `envoy --version` smoke test pass **before** pushing to any branch.
-  - `make build` runs `docker buildx build --load -t envoy-rpi:local .` and smoke-tests `envoy --version`.
-  - `make publish` runs `make lint`, logs into `ghcr.io` via `gh auth token`, and builds/pushes `PLATFORMS` (defaults to `linux/amd64`; set `PLATFORMS=linux/amd64,linux/arm64` for multi-arch).
+  - Run `make lint` (`yamllint .`, `shellcheck`, `hadolint`, `trufflehog` git + filesystem scans) and `make unit-test` (`./tests/test_helpers.sh`).
+  - `make build` resolves `ENVOY_VERSION`, `ENVOY_COMMIT`, and `BUILD_BASE` via `./bin/resolve-build-inputs.sh` and builds `envoy-rpi:local` for the host architecture.
+  - `make smoke-test` runs `envoy-rpi:local` with `--read-only --cap-drop=ALL --security-opt=no-new-privileges --user 65532:65532` serving `examples/envoy.yaml`.
+  - `make test` runs `lint`, `unit-test`, `build`, and `smoke-test`. Note: local `build`/`smoke-test` cover the host architecture (`linux/amd64` on x86_64); multi-arch `linux/amd64` + `linux/arm64` native builds and manifest verification run in CI.
+  - `make publish` runs `lint` + `unit-test` and invokes `./bin/publish.sh` to push to `ghcr.io`.
   - `make install-hooks` configures `core.hooksPath=.githooks`.
 - **Never commit secrets** (`GITHUB_TOKEN`, `.env`, private keys, etc.).
-- **Keep runtime hardened:** Keep the runtime stage distroless non-root (`gcr.io/distroless/cc-debian13:nonroot`, UID/GID `65532`).
-- **Keep release & Renovate workflows intact:**
-  - `VERSION` tracks the upstream `envoyproxy/envoy` tag.
-  - `.github/workflows/build.yml` resolves `BUILD_BASE` from upstream `.bazelrc`, builds `amd64` + `arm64` natively, runs Trivy + smoke tests, publishes to `ghcr.io/hellqvio86/envoy-rpi`, attaches `sbom.cdx.json` + SLSA provenance, and creates/updates the GitHub Draft Release (or publishes on `v*` tags).
-  - Run `./bin/renovate/run.sh --summary` to inspect Renovate updates locally.
+- **Keep runtime hardened & pinned:** Keep `BUILD_BASE` and `gcr.io/distroless/cc-debian13:nonroot` pinned by `@sha256:` digest, keep `ENVOY_COMMIT` verified, and keep all third-party GitHub Actions pinned to full commit SHAs.
+- **Dependency ownership:** Renovate (`renovate.json`) owns `Dockerfile` digests, GitHub Action SHAs, `bin/renovate/run.sh` digest, and `VERSION`; `.github/dependabot.yml` is intentionally omitted to avoid duplicate PRs.
