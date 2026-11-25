@@ -1,5 +1,12 @@
 # 🛡️ envoy-rpi — Multi-Arch Envoy Proxy for Raspberry Pi (`arm64`) & `amd64`
 
+[![Build & Publish Multi-Arch Envoy](https://github.com/hellqvio86/envoy-rpi/actions/workflows/build.yml/badge.svg)](https://github.com/hellqvio86/envoy-rpi/actions/workflows/build.yml)
+[![Check Upstream Envoy](https://github.com/hellqvio86/envoy-rpi/actions/workflows/check-upstream.yml/badge.svg)](https://github.com/hellqvio86/envoy-rpi/actions/workflows/check-upstream.yml)
+![Architectures](https://img.shields.io/badge/arch-amd64%20%7C%20arm64-blue)
+![Distroless](https://img.shields.io/badge/distroless-nonroot%20(65532)-green)
+[![License](https://img.shields.io/github/license/hellqvio86/envoy-rpi)](LICENSE)
+![GitHub last commit](https://img.shields.io/github/last-commit/hellqvio86/envoy-rpi)
+
 Hardened, distroless multi-architecture container images (`linux/arm64` + `linux/amd64`) of [Envoy Proxy](https://www.envoyproxy.io/) built from upstream source with **`--define tcmalloc=disabled`** so Envoy runs reliably on **Raspberry Pi 64-bit (`39-bit` VA) kernels** as well as standard `amd64` servers.
 
 ---
@@ -61,3 +68,13 @@ containers:
   - Merges into a multi-arch OCI manifest on `ghcr.io/hellqvio86/envoy-rpi`, attaches a CycloneDX SBOM, and generates SLSA build provenance attestations.
 - **[`.github/workflows/check-upstream.yml`](.github/workflows/check-upstream.yml):**
   - Weekly scheduled check against `envoyproxy/envoy` releases; automatically opens a PR updating `VERSION` when a new stable release is published.
+
+---
+
+## ☕ Support
+
+<p>
+  <a href="https://www.buymeacoffee.com/olofhellqvc">
+    <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" height="48">
+  </a>
+</p>
