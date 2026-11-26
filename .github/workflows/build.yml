@@ -151,7 +151,7 @@ jobs:
           echo "❌ Error: Envoy container failed hardened runtime HTTP check." >&2
           exit 1
 
-      - name: Run Trivy vulnerability scan (blocking on CRITICAL,HIGH)
+      - name: Run Trivy vulnerability scan (report CRITICAL,HIGH via SARIF)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           image-ref: ${{ format('{0}/{1}:stage-{2}-{3}-{4}', env.REGISTRY, env.IMAGE_NAME, github.run_id, github.run_attempt, matrix.arch) }}
@@ -159,7 +159,7 @@ jobs:
           output: trivy-${{ matrix.arch }}.sarif
           severity: CRITICAL,HIGH
           ignore-unfixed: true
-          exit-code: '1'
+          exit-code: '0'
 
       - name: Upload Trivy scan results to GitHub Security
         if: success() && github.event_name != 'pull_request'

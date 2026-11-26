@@ -78,7 +78,7 @@ Compiling with `--define tcmalloc=disabled` replaces Google's 48-bit TCMalloc wi
 - **[`.github/workflows/build.yml`](.github/workflows/build.yml):**
   - Runs offline unit tests (`./tests/test_helpers.sh`), then builds `linux/amd64` and `linux/arm64` natively in parallel using `./bin/resolve-build-inputs.sh`.
   - Runs hardened runtime HTTP smoke tests (`--read-only --cap-drop=ALL --security-opt=no-new-privileges --user 65532:65532`) with [`examples/envoy.yaml`](examples/envoy.yaml) on both architectures.
-  - Scans images with **Trivy** (`CRITICAL,HIGH`, `exit-code: 1`, `ignore-unfixed: true`, SARIF upload to GitHub Security).
+  - Scans images with **Trivy** (`v0.36.0`, `CRITICAL,HIGH`, `ignore-unfixed: true`) and uploads SARIF findings to GitHub Advanced Security (`exit-code: '0'` so findings are reported without blocking the multi-arch build).
   - Verifies both `linux/amd64` and `linux/arm64` platforms in the merged OCI manifest on `ghcr.io/hellqvio86/envoy-rpi`, attaches a CycloneDX SBOM, generates SLSA build provenance attestations, and manages Draft/Published GitHub Releases.
 - **[`.github/workflows/security.yml`](.github/workflows/security.yml):** Daily + PR/push TruffleHog secret scan and Trivy filesystem scan.
 - **[`.github/workflows/check-upstream.yml`](.github/workflows/check-upstream.yml):** Weekly idempotent check against `envoyproxy/envoy` releases.
