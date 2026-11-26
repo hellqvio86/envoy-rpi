@@ -213,9 +213,9 @@ jobs:
             "${AMD64_STAGE}" \
             "${ARM64_STAGE}"
 
-          # Assert final manifest contains both linux/amd64 and linux/arm64
+          # Assert final manifest contains both linux/amd64 and linux/arm64 (ignoring attestation manifests with unknown/unknown)
           INSPECT_JSON="$(docker buildx imagetools inspect "${IMAGE}:${VER}" --raw)"
-          echo "${INSPECT_JSON}" | jq -e '[.manifests[] | "\(.platform.os)/\(.platform.architecture)"] | sort == ["linux/amd64", "linux/arm64"]' >/dev/null
+          echo "${INSPECT_JSON}" | jq -e '[.manifests[] | select(.platform.os != "unknown" and .platform.architecture != "unknown") | "\(.platform.os)/\(.platform.architecture)"] | sort == ["linux/amd64", "linux/arm64"]' >/dev/null
 
           DIGEST=$(docker buildx imagetools inspect "${IMAGE}:${VER}" --format '{{json .Manifest.Digest}}' | tr -d '"')
           echo "digest=${DIGEST}" >> "${GITHUB_OUTPUT}"
