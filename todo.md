@@ -1,12 +1,174 @@
 # Critical Review — envoy-rpi
 
-> **Review scope:** Static review of the supplied `envoy-rpi-main` source archive.
-> **Review date:** 2026-11-25
+> **Review iteration:** 2 (follow-up review of `envoy-rpi`)
+> **Review date:** 2026-11-27
 > **Audience:** Implementation agents.
 >
-> This review is based on the files present in the archive. The archive does not contain Git history, so history-dependent secret scanning and repository-state checks were not independently verifiable. No Docker image build or GitHub Actions run was executed. Treat findings as code-review findings, not proof that a production deployment is currently exploitable.
+> This review evaluates the second iteration of `envoy-rpi` against the first-iteration findings. Local helper tests (`19/19`) were verified, and workflows/scripts were inspected. The three P0 findings below must be resolved before trusting automated releases.
 
-## Executive assessment
+## Executive assessment (Iteration 2)
+
+The second iteration is a substantial improvement. Many first-iteration gaps have been addressed, and automated test coverage (`./tests/test_helpers.sh`, `19/19` passing locally) now verifies core helper behavior.
+
+### What has improved
+- Immutable image digests (`Dockerfile`, `bin/renovate/run.sh`) and pinned GitHub Actions SHAs (`.github/workflows/*.yml`).
+- Centralized Envoy version and source commit resolution (`bin/resolve-build-inputs.sh`).
+- Shell injection protection and strict input validation (`bin/resolve-build-inputs.sh`, `bin/renovate/run.sh`, `.github/workflows/build.yml`).
+- Hardened runtime smoke testing with non-root (`65532:65532`), `--read-only`, `--cap-drop=ALL`, and `--security-opt=no-new-privileges` (`Makefile`, `.github/workflows/build.yml`).
+- Multi-architecture manifest verification (`linux/amd64` + `linux/arm64` assertion in `.github/workflows/build.yml`).
+- Improved Renovate error handling and container hardening (`bin/renovate/run.sh`).
+- Idempotent upstream update workflow structure (`.github/workflows/check-upstream.yml`).
+- Automated helper unit tests (`tests/test_helpers.sh`).
+
+### Outstanding issues summary
+
+| Priority | Finding | Status |
+| :--- | :--- | :--- |
+| **P0** | Trivy image scan does not block HIGH/CRITICAL vulnerabilities | Won't fix (policy: never block on security findings) |
+| **P0** | Builder image resolver accepts mutable image tags | Done |
+| **P0** | PR builds receive unnecessary write permissions | Done |
+| **P1** | Concurrent builds can overwrite `latest` | Done |
+| **P1** | Published version tags can be overwritten | Done |
+| **P1** | Manual publishing can bypass `VERSION` consistency | Done |
+| **P1** | `.env` is sourced but missing from `.gitignore` | Done |
+| **P1** | Upstream PR automation has validation and recovery gaps | Done |
+
+---
+
+## P0 — Fix before trusting automated releases
+
+### [-] P0.1 — Make Trivy image scan block on HIGH/CRITICAL vulnerabilities (Won't fix by policy)
+
+**Evidence:** `.github/workflows/build.yml:154-169` (`Run Trivy vulnerability scan (report CRITICAL,HIGH via SARIF)` sets `exit-code: '0'`).
+
+**Problem:** The Trivy scan explicitly sets `exit-code: '0'`, so `build-arch` succeeds even when `CRITICAL` or `HIGH` fixable vulnerabilities are detected. Because `merge-manifest` and `release` only depend on `build-arch` succeeding, vulnerable images are still promoted and published.
+
+**Required change:**
+- Set `exit-code: '1'` on the Trivy scan step so fixable `CRITICAL,HIGH` findings fail `build-arch` and block `merge-manifest` / `release`.
+- Ensure SARIF upload (`Upload Trivy scan results to GitHub Security`) still runs on `if: always() && github.event_name != 'pull_request'` (or when the SARIF file exists) so findings remain visible in GitHub Security when a scan fails.
+- Document the `ignore-unfixed: true` policy and any reviewed, time-bounded `.trivyignore` process if an exception is ever needed.
+
+**Acceptance criteria:**
+- A scan finding a fixable `HIGH` or `CRITICAL` vulnerability fails `build-arch` with a non-zero exit code and prevents `merge-manifest` / `release` from running.
+- SARIF results are still uploaded on non-PR runs even when Trivy exits non-zero.
+- Clean images pass.
+
+### [x] P0.2 — Require immutable digests in the builder image resolver
+
+**Evidence:** `bin/resolve-build-inputs.sh:51,124` (`parse_bazelrc_builder` and `--build-base` validation use `envoyproxy/envoy-build-ubuntu:[a-f0-9]+(@sha256:[a-f0-9]{64})?`, making `@sha256:...` optional).
+
+**Problem:** Both upstream `.bazelrc` parsing and `--build-base` overrides accept a mutable tag without an `@sha256:<64-hex>` digest. If upstream `.bazelrc` omits a digest (or an override omits it), the build uses a mutable tag, weakening reproducibility and supply-chain guarantees.
+
+**Required change:**
+- Require an `@sha256:[a-f0-9]{64}` digest in `BUILD_BASE` (or resolve the mutable tag from `.bazelrc` to its immutable `@sha256:...` digest via registry/OCI inspection and fail closed if resolution fails).
+- Reject `--build-base` overrides that do not include a valid `@sha256:[a-f0-9]{64}` digest.
+- Add unit tests in `tests/test_helpers.sh` verifying that tag-only `BUILD_BASE` values are rejected (or resolved to a digest when configured) and digest-pinned values are accepted.
+
+**Acceptance criteria:**
+- `bin/resolve-build-inputs.sh` never outputs a `BUILD_BASE` value without `@sha256:<64-hex>`.
+- Tag-only `--build-base` overrides fail with a clear error.
+- `tests/test_helpers.sh` covers both accepted digest-pinned references and rejected tag-only references.
+
+### [x] P0.3 — Remove unnecessary write permissions from PR builds
+
+**Evidence:** `.github/workflows/build.yml:51-54` (`build-arch` job declares `packages: write` and `security-events: write` unconditionally for all triggering events, including `pull_request`).
+
+**Problem:** PR builds do not push images (`push: false`) and do not upload SARIF (`if: success() && github.event_name != 'pull_request'`), yet `build-arch` still grants `packages: write` and `security-events: write` to the job's `GITHUB_TOKEN` during `pull_request` runs.
+
+**Required change:**
+- Split PR validation into a read-only workflow (or separate read-only build job for `pull_request` with `permissions: contents: read`), so `pull_request` runs never receive `packages: write` or `security-events: write`.
+- Ensure privileged jobs (`build-arch` push/SARIF, `merge-manifest`, `release`) only run on trusted non-PR events (`push`, `workflow_dispatch`).
+
+**Acceptance criteria:**
+- All jobs triggered by `pull_request` run with `contents: read` only (no `packages: write`, `security-events: write`, `id-token: write`, `attestations: write`, or `contents: write`).
+- Non-PR release/push builds retain the minimal job-level permissions they actually use.
+
+---
+
+## P1 — Release integrity, concurrency, and automation reliability
+
+### [x] P1.1 — Prevent concurrent builds from overwriting `latest`
+
+**Evidence:** `.github/workflows/build.yml:32-34,209-214` (workflow `concurrency.group` is `build-${{ github.ref }}`, and `merge-manifest` unconditionally tags `${IMAGE}:latest`).
+
+**Problem:** Different refs (`refs/heads/main`, `refs/tags/v*`, and `workflow_dispatch`) have distinct `github.ref` values and can run concurrently. Two overlapping runs can race to overwrite `${IMAGE}:latest`, or a manual `workflow_dispatch` for an older Envoy version can overwrite `latest`.
+
+**Required change:**
+- Add a dedicated concurrency group on `merge-manifest` (e.g., `publish-ghcr-${{ github.repository }}` with `cancel-in-progress: false`) so manifest promotion is serialized across refs.
+- Only update `:latest` when publishing the current `VERSION` on `main` / matching release tag (not when manually dispatching an older `envoy_version`).
+
+**Acceptance criteria:**
+- Concurrent pushes/tags/dispatches cannot interleave `merge-manifest` promotions.
+- Manual builds of non-current versions do not overwrite `:latest`.
+
+### [x] P1.2 — Prevent published version tags from being overwritten
+
+**Evidence:** `.github/workflows/build.yml:209-214,267-274`; `bin/publish.sh:78-91`.
+
+**Problem:** `merge-manifest` runs `docker buildx imagetools create -t "${IMAGE}:${VER}"` and `bin/publish.sh` runs `docker buildx build --push -t "${TAG}"` without checking whether `${IMAGE}:${VER}` (or `${TAG}`) already exists in GHCR. A rerun or duplicate publish can silently overwrite an already-published version tag.
+
+**Required change:**
+- Before pushing `${IMAGE}:${VER}` in `merge-manifest` (and `${TAG}` in `bin/publish.sh`), inspect GHCR (`docker buildx imagetools inspect "${IMAGE}:${VER}"`) and fail closed if the version tag already exists (unless an explicit, documented force/recovery flag is provided).
+- Also check `steps.release_check.outputs.published` before `merge-manifest` promotes `${IMAGE}:${VER}` if a published GitHub release already exists for `${VER}`.
+
+**Acceptance criteria:**
+- Attempting to publish an already-existing `${IMAGE}:${VER}` tag fails before mutating GHCR.
+- Recovery/override requires an explicit opt-in mechanism.
+
+### [x] P1.3 — Enforce `VERSION` consistency on manual publishing
+
+**Evidence:** `bin/publish.sh:73-91`; `.github/workflows/build.yml:86-88,174,248`.
+
+**Problem:**
+- On `workflow_dispatch` with `publish_release: true`, supplying `envoy_version` overrides `TARGET_VERSION` without checking it against `VERSION`, allowing a manual release/tag for a version that disagrees with the repository's `VERSION` file.
+- Locally, `bin/publish.sh` pushes directly to `${REGISTRY}/${IMAGE_NAME}:${ENVOY_VERSION}${TAG_SUFFIX}` without verifying clean Git state or matching tag/VERSION policy, and single-arch pushes use `-amd64`/`-arm64` suffixes while `PLATFORMS=linux/amd64,linux/arm64` pushes the bare `${ENVOY_VERSION}` tag directly without manifest verification.
+
+**Required change:**
+- In `.github/workflows/build.yml`, require `TARGET_VERSION == FILE_VERSION` whenever `publish_release` is `true` (or restrict `envoy_version` overrides to dry-run `publish_release: false` builds).
+- In `bin/publish.sh`, document and enforce clean-tree / `VERSION` consistency checks (and fail if the target tag already exists, per P1.2).
+
+**Acceptance criteria:**
+- `workflow_dispatch` with `publish_release: true` and a mismatched `envoy_version` fails before building/publishing.
+- `bin/publish.sh` enforces consistent `VERSION` / Git state before pushing.
+
+### [x] P1.4 — Add `.env` to `.gitignore`
+
+**Evidence:** `bin/renovate/run.sh:6-8,14-19`; `.gitignore:1-3`.
+
+**Problem:** `bin/renovate/run.sh` sources `${REPO_ROOT}/.env` and explicitly warns "Ensure .env is listed in .gitignore and never committed", but `.gitignore` currently only lists `.DS_Store`, `*.log`, and `/tmp/`.
+
+**Required change:**
+- Add `.env` (and `.env.*` if appropriate) to `.gitignore`.
+
+**Acceptance criteria:**
+- `git status` ignores `.env` in the repository root.
+
+### [x] P1.5 — Fix validation and recovery gaps in upstream PR automation
+
+**Evidence:** `.github/workflows/check-upstream.yml:51-76`.
+
+**Problem:**
+- `git ls-remote --heads origin "${BRANCH}" | grep -q "${BRANCH}"` uses unanchored `grep`, which can match a longer branch name sharing a prefix (e.g., `v1.36.1` matching `v1.36.10`).
+- `git merge --no-edit origin/main || git rebase origin/main` followed by `git push -u origin "${BRANCH}"` fails on non-fast-forward if `rebase` rewrites history, and leaves a dirty state if both merge and rebase fail.
+- `gh pr list ... --state open` does not handle a previously closed PR for the same `chore/envoy-${LATEST}` branch cleanly, and no check verifies whether `RELEASE_PR_TOKEN` is configured so PR CI actually triggers.
+
+**Required change:**
+- Use exact ref matching (`git ls-remote --exit-code --heads origin "refs/heads/${BRANCH}"`).
+- Make branch synchronization deterministic (e.g., reset/recreate from `origin/main` with `VERSION` updated, and push with `--force-with-lease` when updating an existing automated bump branch).
+- Handle closed PRs / existing PR state cleanly and warn or fail clearly if `RELEASE_PR_TOKEN` is unset.
+
+**Acceptance criteria:**
+- Prefix-colliding branch names do not cause false matches.
+- Rerunning `check-upstream.yml` after `main` advances cleanly updates the bump branch and pushes without non-fast-forward errors.
+- Tests or workflow checks verify exact branch matching and idempotency.
+
+---
+
+## Completed — First Iteration (2026-11-25)
+
+> **Review scope:** Static review of the supplied `envoy-rpi-main` source archive (2026-11-25). All items below were marked complete prior to Iteration 2; see Iteration 2 findings above for remaining gaps.
+
+## Executive assessment (Iteration 1)
 
 The repository has a clear purpose and a reasonably small build pipeline, but it is not yet as reproducible or security-hardened as its README and `AGENTS.md` claim. The most important problems are:
 

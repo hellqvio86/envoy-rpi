@@ -70,6 +70,11 @@ if [[ -z "${ACTOR}" ]]; then
   exit 1
 fi
 
+if [[ -n "$(git status --porcelain -- VERSION 2>/dev/null)" ]]; then
+  echo "❌ Error: VERSION has uncommitted changes. Commit VERSION before publishing." >&2
+  exit 1
+fi
+
 RESOLVED="$("${SCRIPT_DIR}/resolve-build-inputs.sh")"
 ENVOY_VERSION="$(printf '%s\n' "${RESOLVED}" | awk -F= '/^ENVOY_VERSION=/{print $2}')"
 ENVOY_COMMIT="$(printf '%s\n' "${RESOLVED}" | awk -F= '/^ENVOY_COMMIT=/{print $2}')"
@@ -79,6 +84,11 @@ TAG="${REGISTRY}/${IMAGE_NAME}:${ENVOY_VERSION}${TAG_SUFFIX}"
 
 echo "🔐 Logging into ${REGISTRY} as ${ACTOR}..."
 printf '%s' "${TOKEN}" | docker login "${REGISTRY}" -u "${ACTOR}" --password-stdin
+
+if [[ "${ALLOW_OVERWRITE:-false}" != "true" ]] && docker buildx imagetools inspect "${TAG}" >/dev/null 2>&1; then
+  echo "❌ Error: ${TAG} already exists in ${REGISTRY}. Set ALLOW_OVERWRITE=true to overwrite." >&2
+  exit 1
+fi
 
 echo "🚀 Building and publishing ${TAG} (${PLATFORMS}, commit ${ENVOY_COMMIT})..."
 docker buildx build \

@@ -7,9 +7,6 @@ on:
       - main
     tags:
       - 'v*'
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       envoy_version:
@@ -18,6 +15,11 @@ on:
         type: string
       publish_release:
         description: 'Publish/update GHCR manifest & draft release (default false = build-only)'
+        required: false
+        default: false
+        type: boolean
+      allow_overwrite:
+        description: 'Allow overwriting an existing published version tag in GHCR'
         required: false
         default: false
         type: boolean
@@ -56,6 +58,7 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
       envoy_commit: ${{ steps.meta.outputs.envoy_commit }}
       build_base: ${{ steps.meta.outputs.build_base }}
+      is_current: ${{ steps.meta.outputs.is_current }}
     strategy:
       fail-fast: false
       matrix:
@@ -75,6 +78,7 @@ jobs:
         id: meta
         env:
           INPUT_ENVOY_VERSION: ${{ github.event.inputs.envoy_version }}
+          INPUT_PUBLISH_RELEASE: ${{ github.event.inputs.publish_release }}
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
         shell: bash
@@ -84,6 +88,10 @@ jobs:
           TARGET_VERSION="${FILE_VERSION}"
 
           if [[ "${EVENT_NAME}" == "workflow_dispatch" && -n "${INPUT_ENVOY_VERSION}" ]]; then
+            if [[ "${INPUT_PUBLISH_RELEASE}" == "true" && "${INPUT_ENVOY_VERSION}" != "${FILE_VERSION}" ]]; then
+              echo "❌ Error: Cannot publish release for '${INPUT_ENVOY_VERSION}' when VERSION file is '${FILE_VERSION}'." >&2
+              exit 1
+            fi
             TARGET_VERSION="${INPUT_ENVOY_VERSION}"
           fi
 
@@ -94,6 +102,12 @@ jobs:
               exit 1
             fi
             TARGET_VERSION="${REF_NAME}"
+          fi
+
+          if [[ "${TARGET_VERSION}" == "${FILE_VERSION}" ]]; then
+            echo "is_current=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "is_current=false" >> "${GITHUB_OUTPUT}"
           fi
 
           ./bin/resolve-build-inputs.sh --version "${TARGET_VERSION}" --github-output
@@ -171,8 +185,11 @@ jobs:
   merge-manifest:
     name: Publish Multi-Arch Manifest & Attestations
     needs: build-arch
-    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.publish_release)
+    if: github.event_name != 'workflow_dispatch' || inputs.publish_release
     runs-on: ubuntu-latest
+    concurrency:
+      group: publish-ghcr-${{ github.repository }}
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
@@ -194,6 +211,9 @@ jobs:
 
       - name: Verify staging images & publish multi-arch OCI manifest
         id: manifest
+        env:
+          ALLOW_OVERWRITE: ${{ github.event.inputs.allow_overwrite || 'false' }}
+          IS_CURRENT: ${{ needs.build-arch.outputs.is_current }}
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -202,14 +222,22 @@ jobs:
           AMD64_STAGE="${IMAGE}:stage-${{ github.run_id }}-${{ github.run_attempt }}-amd64"
           ARM64_STAGE="${IMAGE}:stage-${{ github.run_id }}-${{ github.run_attempt }}-arm64"
 
+          if [[ "${ALLOW_OVERWRITE}" != "true" ]] && docker buildx imagetools inspect "${IMAGE}:${VER}" >/dev/null 2>&1; then
+            echo "❌ Error: ${IMAGE}:${VER} already exists in ${REGISTRY}. Refusing to overwrite published version tag." >&2
+            exit 1
+          fi
+
           # Verify both staging images exist before creating final manifest
           docker buildx imagetools inspect "${AMD64_STAGE}" >/dev/null
           docker buildx imagetools inspect "${ARM64_STAGE}" >/dev/null
 
+          TAG_ARGS=(-t "${IMAGE}:${VER}" -t "${IMAGE}:sha-${GITHUB_SHA::7}")
+          if [[ "${IS_CURRENT}" == "true" ]]; then
+            TAG_ARGS+=(-t "${IMAGE}:latest")
+          fi
+
           docker buildx imagetools create \
-            -t "${IMAGE}:${VER}" \
-            -t "${IMAGE}:latest" \
-            -t "${IMAGE}:sha-${GITHUB_SHA::7}" \
+            "${TAG_ARGS[@]}" \
             "${AMD64_STAGE}" \
             "${ARM64_STAGE}"
 

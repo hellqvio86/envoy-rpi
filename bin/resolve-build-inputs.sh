@@ -48,9 +48,9 @@ validate_commit() {
 parse_bazelrc_builder() {
   local bazelrc_path="$1"
   local match
-  match="$(grep -Eo 'envoyproxy/envoy-build-ubuntu:[a-f0-9]+(@sha256:[a-f0-9]{64})?' "${bazelrc_path}" | sort -u || true)"
+  match="$(grep -Eo 'envoyproxy/envoy-build-ubuntu:[a-f0-9]+@sha256:[a-f0-9]{64}' "${bazelrc_path}" | sort -u || true)"
   if [[ -z "${match}" ]]; then
-    echo "❌ Error: Could not find 'envoyproxy/envoy-build-ubuntu:<tag>' in ${bazelrc_path}." >&2
+    echo "❌ Error: Could not find digest-pinned 'envoyproxy/envoy-build-ubuntu:<tag>@sha256:<digest>' in ${bazelrc_path}." >&2
     return 1
   fi
   local line_count
@@ -121,8 +121,8 @@ else
 fi
 
 if [[ -n "${BUILD_BASE_OVERRIDE}" ]]; then
-  if [[ ! "${BUILD_BASE_OVERRIDE}" =~ ^envoyproxy/envoy-build-ubuntu:[a-f0-9]+(@sha256:[a-f0-9]{64})?$ ]]; then
-    echo "❌ Error: Invalid --build-base override '${BUILD_BASE_OVERRIDE}'." >&2
+  if [[ ! "${BUILD_BASE_OVERRIDE}" =~ ^envoyproxy/envoy-build-ubuntu:[a-f0-9]+@sha256:[a-f0-9]{64}$ ]]; then
+    echo "❌ Error: Invalid --build-base override '${BUILD_BASE_OVERRIDE}'. Expected 'envoyproxy/envoy-build-ubuntu:<tag>@sha256:<64-hex>'." >&2
     exit 1
   fi
   BUILD_BASE="${BUILD_BASE_OVERRIDE}"

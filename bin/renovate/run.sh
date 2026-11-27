@@ -213,12 +213,12 @@ DOCKER_ARGS=(
   -e "RENOVATE_DRY_RUN=${DRY_RUN}"
   -e "RENOVATE_PLATFORM=${PLATFORM}"
   -e "RENOVATE_GIT_AUTHOR=${GIT_AUTHOR}"
-  -e "RENOVATE_CACHE_DIR=/tmp/renovate/cache"
+  -e "RENOVATE_CACHE_DIR=/tmp/renovate-cache"
   -e "RENOVATE_CONFIG_FILE=/usr/src/app/renovate.json"
   -e "RENOVATE_REQUIRE_CONFIG=ignored"
   -e "RENOVATE_ONBOARDING=false"
-  -v "${CACHE_DIR}:/tmp/renovate/cache"
-  -v "${REPO_ROOT}:/usr/src/app"
+  -v "${CACHE_DIR}:/tmp/renovate-cache:z"
+  -v "${REPO_ROOT}:/usr/src/app:z"
   -w "/usr/src/app"
 )
 
