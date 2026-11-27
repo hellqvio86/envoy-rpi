@@ -40,6 +40,7 @@ jobs:
         if: steps.upstream.outputs.latest != steps.upstream.outputs.current
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PR_TOKEN || secrets.GITHUB_TOKEN }}
+          HAS_RELEASE_PR_TOKEN: ${{ secrets.RELEASE_PR_TOKEN != '' }}
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -48,22 +49,24 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          if git ls-remote --heads origin "${BRANCH}" | grep -q "${BRANCH}"; then
-            git fetch origin "${BRANCH}"
-            git checkout -B "${BRANCH}" "origin/${BRANCH}"
-            git merge --no-edit origin/main || git rebase origin/main
-          else
-            git checkout -b "${BRANCH}"
+          if [[ "${HAS_RELEASE_PR_TOKEN}" != "true" ]]; then
+            echo "⚠️ Warning: RELEASE_PR_TOKEN is not set; PRs created with GITHUB_TOKEN may not trigger PR CI workflows." >&2
           fi
 
+          git fetch origin main
+          git checkout -B "${BRANCH}" origin/main
+
           printf '%s\n' "${LATEST}" > VERSION
-          if git diff --quiet VERSION; then
-            echo "VERSION already at ${LATEST} on ${BRANCH}."
-          else
+          if ! git diff --quiet VERSION; then
             git add VERSION
             git commit -m "chore: bump Envoy to ${LATEST}"
           fi
-          git push -u origin "${BRANCH}"
+
+          if git ls-remote --exit-code --heads origin "refs/heads/${BRANCH}" >/dev/null 2>&1; then
+            git push --force-with-lease -u origin "${BRANCH}"
+          else
+            git push -u origin "${BRANCH}"
+          fi
 
           if gh pr list --repo "${{ github.repository }}" --head "${BRANCH}" --state open --json number -q '.[0].number' | grep -qE '^[0-9]+$'; then
             echo "PR for ${BRANCH} already open."

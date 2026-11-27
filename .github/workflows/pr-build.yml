@@ -1,0 +1,115 @@
+---
+name: PR Validation (Read-Only)
+
+on:
+  pull_request:
+    branches:
+      - main
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    name: Unit Tests & Static Checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run helper unit tests
+        run: ./tests/test_helpers.sh
+
+  build-arch:
+    name: Build (${{ matrix.arch }})
+    needs: unit-tests
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Validate & resolve Envoy build inputs
+        id: meta
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FILE_VERSION="$(tr -d '[:space:]' < VERSION)"
+          ./bin/resolve-build-inputs.sh --version "${FILE_VERSION}" --github-output
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4
+
+      - name: Build local image for smoke & Trivy checks
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          push: false
+          load: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:stage-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
+          build-args: |
+            ENVOY_VERSION=${{ steps.meta.outputs.version }}
+            ENVOY_COMMIT=${{ steps.meta.outputs.envoy_commit }}
+            BUILD_BASE=${{ steps.meta.outputs.build_base }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp || '' }}
+            VCS_REF=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.arch }}-${{ steps.meta.outputs.version }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}-${{ steps.meta.outputs.version }}
+
+      - name: Hardened runtime smoke test (non-root, read-only rootfs, drop ALL)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          TARGET_REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:stage-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}"
+          docker run --rm --read-only --cap-drop=ALL --security-opt=no-new-privileges --user 65532:65532 "${TARGET_REF}" --version
+          docker run --rm --read-only --cap-drop=ALL --security-opt=no-new-privileges --user 65532:65532 \
+            -v "${PWD}/examples/envoy.yaml:/etc/envoy/envoy.yaml:ro" "${TARGET_REF}" --mode validate -c /etc/envoy/envoy.yaml
+
+          CID="$(docker run -d --read-only --cap-drop=ALL --security-opt=no-new-privileges --user 65532:65532 \
+            -p 18080:8080 -v "${PWD}/examples/envoy.yaml:/etc/envoy/envoy.yaml:ro" "${TARGET_REF}")"
+          trap 'docker rm -f "${CID}" >/dev/null 2>&1 || true' EXIT
+
+          for _ in $(seq 1 15); do
+            if curl -fsS http://127.0.0.1:18080/ | grep -qx 'ok'; then
+              echo "✅ Hardened runtime HTTP check passed on ${TARGET_REF}"
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs "${CID}" || true
+          echo "❌ Error: Envoy container failed hardened runtime HTTP check." >&2
+          exit 1
+
+      - name: Run Trivy vulnerability scan (informational SARIF)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: ${{ format('{0}/{1}:stage-{2}-{3}-{4}', env.REGISTRY, env.IMAGE_NAME, github.run_id, github.run_attempt, matrix.arch) }}
+          format: sarif
+          output: trivy-${{ matrix.arch }}.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '0'

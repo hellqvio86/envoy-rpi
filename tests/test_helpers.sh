@@ -58,6 +58,17 @@ assert_fails "reject short version" "${REPO_ROOT}/bin/resolve-build-inputs.sh" -
 assert_fails "reject invalid commit" "${REPO_ROOT}/bin/resolve-build-inputs.sh" --version 'v1.36.13' --envoy-commit 'deadbeef' --bazelrc "${VALID_BAZELRC}"
 assert_fails "reject malformed bazelrc" "${REPO_ROOT}/bin/resolve-build-inputs.sh" --version 'v1.36.13' --envoy-commit eb0a95ba450a3e29a9a8e75f672e2c294493eea2 --bazelrc "${BAD_BAZELRC}"
 
+TAG_ONLY_BAZELRC="${TMP_DIR}/tag-only.bazelrc"
+echo "build --action_env=BAZEL_BUILD_IMAGE=envoyproxy/envoy-build-ubuntu:86873047235e9b8232df989a5999b9bebf9db69c" > "${TAG_ONLY_BAZELRC}"
+assert_fails "reject tag-only bazelrc builder" "${REPO_ROOT}/bin/resolve-build-inputs.sh" --version 'v1.36.13' --envoy-commit eb0a95ba450a3e29a9a8e75f672e2c294493eea2 --bazelrc "${TAG_ONLY_BAZELRC}"
+assert_fails "reject tag-only --build-base override" "${REPO_ROOT}/bin/resolve-build-inputs.sh" --version 'v1.36.13' --envoy-commit eb0a95ba450a3e29a9a8e75f672e2c294493eea2 --build-base 'envoyproxy/envoy-build-ubuntu:86873047235e9b8232df989a5999b9bebf9db69c'
+
+OVERRIDE_OUT="$("${REPO_ROOT}/bin/resolve-build-inputs.sh" \
+  --version v1.36.13 \
+  --envoy-commit eb0a95ba450a3e29a9a8e75f672e2c294493eea2 \
+  --build-base 'envoyproxy/envoy-build-ubuntu:86873047235e9b8232df989a5999b9bebf9db69c@sha256:1b3c82ca34c505c4951918b2e0a0c3db88cf266ebbf4196e4b0fba8fa137ada3' 2>/dev/null)"
+assert_eq "BUILD_BASE=envoyproxy/envoy-build-ubuntu:86873047235e9b8232df989a5999b9bebf9db69c@sha256:1b3c82ca34c505c4951918b2e0a0c3db88cf266ebbf4196e4b0fba8fa137ada3" "$(printf '%s\n' "${OVERRIDE_OUT}" | grep '^BUILD_BASE=')" "accept digest-pinned --build-base override"
+
 # --- 2. publish.sh tests ---
 EMPTY_BIN="${TMP_DIR}/empty_bin"
 mkdir -p "${EMPTY_BIN}"
